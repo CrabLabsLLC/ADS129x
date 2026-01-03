@@ -1,0 +1,102 @@
+# Copyright (c) 2025 Makani Science
+# SPDX-License-Identifier: Apache-2.0
+
+description: |
+  Texas Instruments ADS1293 3-Channel, 24-Bit ECG Analog Front-End
+
+  The ADS1293 is a low-power, 3-channel, 24-bit analog front-end
+  designed for biopotential measurements such as ECG applications.
+  It features flexible input routing, programmable sample rates,
+  lead-off detection, and right leg drive.
+
+  Clock Source Configuration:
+  The ADS1293 requires a clock source, which can be either:
+    1. External crystal - Connected directly to the chip's XTAL1/XTAL2 pins
+    2. MCU-provided clock - PWM output connected to the chip's CLKIN pin
+
+  If the clkin-pwms property is present, the driver uses MCU-provided
+  clock via PWM. Otherwise, it assumes an external crystal is present.
+
+  Example with external crystal (default):
+
+    &spi0 {
+      ads1293: ads1293@0 {
+        compatible = "ti,ads1293";
+        reg = <0>;
+        spi-max-frequency = <4000000>;
+        drdy-gpios = <&gpio0 10 GPIO_ACTIVE_LOW>;
+        reset-gpios = <&gpio0 12 GPIO_ACTIVE_LOW>;
+      };
+    };
+
+  Example with MCU-provided clock via PWM:
+
+    &spi0 {
+      ads1293: ads1293@0 {
+        compatible = "ti,ads1293";
+        reg = <0>;
+        spi-max-frequency = <4000000>;
+        drdy-gpios = <&gpio0 10 GPIO_ACTIVE_LOW>;
+        reset-gpios = <&gpio0 12 GPIO_ACTIVE_LOW>;
+        clkin-pwms = <&pwm0 0 PWM_HZ(204800) PWM_POLARITY_NORMAL>;
+      };
+    };
+
+compatible: "ti,ads1293"
+
+include: spi-device.yaml
+
+properties:
+  drdy-gpios:
+    type: phandle-array
+    required: true
+    description: |
+      GPIO connected to the DRDYB (Data Ready) pin.
+      This pin goes low when new ECG data is available.
+      Active-low signal.
+
+  alarm-gpios:
+    type: phandle-array
+    description: |
+      GPIO connected to the ALARMB pin.
+      This pin indicates error conditions such as lead-off
+      detection or out-of-range signals.
+      Active-low signal.
+
+  reset-gpios:
+    type: phandle-array
+    description: |
+      GPIO connected to the RESETB pin.
+      Used for hardware reset of the device.
+      Active-low signal.
+
+      If not provided, software must ensure proper power-on
+      reset timing.
+
+  clkin-pwms:
+    type: phandle-array
+    description: |
+      PWM channel used to generate the clock signal for the
+      ADS1293 CLKIN pin.
+
+      When this property is present, the driver configures the
+      PWM to output a 50% duty cycle clock at the frequency
+      specified in the PWM specifier.
+
+      The ADS1293 supports clock frequencies from 128 kHz to
+      512 kHz. The internal oscillator frequency is 204.8 kHz.
+
+      If this property is absent, the driver assumes an external
+      crystal is connected to the XTAL1/XTAL2 pins.
+
+      Example for 204.8 kHz clock:
+        clkin-pwms = <&pwm0 0 PWM_HZ(204800) PWM_POLARITY_NORMAL>;
+
+      Example for 256 kHz clock:
+        clkin-pwms = <&pwm0 0 PWM_HZ(256000) PWM_POLARITY_NORMAL>;
+
+  vin-supply:
+    type: phandle
+    description: |
+      Reference to the regulator that supplies power to the device.
+      Used for power management.

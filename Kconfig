@@ -1,0 +1,114 @@
+# Copyright (c) 2025 Makani Science
+# SPDX-License-Identifier: Apache-2.0
+
+menuconfig ADS1293
+	bool "ADS1293 ECG Analog Front-End driver"
+	default y
+	depends on DT_HAS_TI_ADS1293_ENABLED
+	depends on SPI
+	select GPIO
+	help
+	  Enable driver for Texas Instruments ADS1293 3-channel, 24-bit
+	  low-power analog front-end for ECG applications.
+
+if ADS1293
+
+config ADS1293_INIT_PRIORITY
+	int "ADS1293 initialization priority"
+	default 90
+	help
+	  Device initialization priority for ADS1293.
+	  Should be higher than SPI bus priority.
+
+config ADS1293_LOG_LEVEL
+	int "ADS1293 log level"
+	default 3
+	range 0 4
+	help
+	  Sets log level for ADS1293 driver.
+	  0 = OFF, 1 = ERR, 2 = WRN, 3 = INF, 4 = DBG
+
+config ADS1293_TRIGGER
+	bool "Enable ADS1293 trigger support"
+	default y
+	help
+	  Enable interrupt-driven data acquisition using DRDY GPIO.
+
+if ADS1293_TRIGGER
+
+choice ADS1293_TRIGGER_MODE
+	prompt "Trigger mode"
+	default ADS1293_TRIGGER_GLOBAL_THREAD
+
+config ADS1293_TRIGGER_NONE
+	bool "No trigger (polling only)"
+	help
+	  Disable interrupt triggers. Application must poll for data.
+
+config ADS1293_TRIGGER_GLOBAL_THREAD
+	bool "Use global work queue"
+	depends on GPIO
+	select ADS1293_TRIGGER
+	help
+	  Use the global work queue for trigger handling.
+	  Lower memory usage but may have higher latency.
+
+config ADS1293_TRIGGER_OWN_THREAD
+	bool "Use dedicated thread"
+	depends on GPIO
+	select ADS1293_TRIGGER
+	help
+	  Use a dedicated thread for trigger handling.
+	  Lower latency but uses more memory.
+
+endchoice
+
+config ADS1293_THREAD_STACK_SIZE
+	int "Stack size for dedicated trigger thread"
+	default 1024
+	depends on ADS1293_TRIGGER_OWN_THREAD
+	help
+	  Stack size for the ADS1293 dedicated trigger thread.
+
+config ADS1293_THREAD_PRIORITY
+	int "Priority of dedicated trigger thread"
+	default 10
+	depends on ADS1293_TRIGGER_OWN_THREAD
+	help
+	  Priority for the ADS1293 dedicated trigger thread.
+
+endif # ADS1293_TRIGGER
+
+config ADS1293_DEFAULT_SAMPLE_RATE
+	int "Default sample rate in Hz"
+	default 256
+	range 50 25600
+	help
+	  Default ECG sample rate in Hz. Common values:
+	  - 256 Hz: Standard diagnostic ECG
+	  - 512 Hz: High resolution
+	  - 128 Hz: Low power mode
+
+config ADS1293_AUTO_START
+	bool "Automatically start conversion on init"
+	default n
+	help
+	  If enabled, ECG conversion starts automatically after
+	  device initialization. Otherwise, application must call
+	  ads1293_start() to begin acquisition.
+
+config ADS1293_LEAD_OFF_DETECTION
+	bool "Enable lead-off detection"
+	default y
+	help
+	  Enable electrode lead-off detection feature.
+	  Useful for detecting disconnected electrodes.
+
+config ADS1293_RLD_ENABLE
+	bool "Enable Right Leg Drive"
+	default y
+	help
+	  Enable the Right Leg Drive (RLD) amplifier for
+	  common-mode noise rejection.
+
+endif # ADS1293
