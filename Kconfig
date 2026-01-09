@@ -31,6 +31,7 @@ config ADS1293_LOG_LEVEL
 config ADS1293_TRIGGER
 	bool "Enable ADS1293 trigger support"
 	default y
+	depends on GPIO
 	help
 	  Enable interrupt-driven data acquisition using DRDY GPIO.
 
@@ -40,23 +41,14 @@ choice ADS1293_TRIGGER_MODE
 	prompt "Trigger mode"
 	default ADS1293_TRIGGER_GLOBAL_THREAD
 
-config ADS1293_TRIGGER_NONE
-	bool "No trigger (polling only)"
-	help
-	  Disable interrupt triggers. Application must poll for data.
-
 config ADS1293_TRIGGER_GLOBAL_THREAD
 	bool "Use global work queue"
-	depends on GPIO
-	select ADS1293_TRIGGER
 	help
 	  Use the global work queue for trigger handling.
 	  Lower memory usage but may have higher latency.
 
 config ADS1293_TRIGGER_OWN_THREAD
 	bool "Use dedicated thread"
-	depends on GPIO
-	select ADS1293_TRIGGER
 	help
 	  Use a dedicated thread for trigger handling.
 	  Lower latency but uses more memory.
