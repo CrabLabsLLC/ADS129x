@@ -983,10 +983,16 @@ DT_INST_FOREACH_STATUS_OKAY(ADS1293_DEFINE)
 /* Helper to get device by label */
 ads1293_dev_t *ads1293_get_device(const char *const name)
 {
-	/* This is a simplified implementation - in practice you'd use
-	 * DEVICE_DT_GET with proper label handling */
 	(void)name;
-	return NULL; /* User should use DEVICE_DT_GET directly */
+
+	const struct device *dev = DEVICE_DT_GET_ANY(ti_ads1293);
+	if (!dev || !device_is_ready(dev))
+	{
+		return NULL;
+	}
+
+	struct ads1293_zephyr_data *data = dev->data;
+	return &data->dev;
 }
 
 #endif /* DT_HAS_COMPAT_STATUS_OKAY(ti_ads1293) */
