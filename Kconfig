@@ -28,67 +28,6 @@ config ADS1293_LOG_LEVEL
 	  Sets log level for ADS1293 driver.
 	  0 = OFF, 1 = ERR, 2 = WRN, 3 = INF, 4 = DBG
 
-config ADS1293_TRIGGER
-	bool "Enable ADS1293 trigger support"
-	default y
-	depends on GPIO
-	help
-	  Enable interrupt-driven data acquisition using DRDY GPIO.
-
-if ADS1293_TRIGGER
-
-choice ADS1293_TRIGGER_MODE
-	prompt "Trigger mode"
-	default ADS1293_TRIGGER_GLOBAL_THREAD
-
-config ADS1293_TRIGGER_GLOBAL_THREAD
-	bool "Use global work queue"
-	help
-	  Use the global work queue for trigger handling.
-	  Lower memory usage but may have higher latency.
-
-config ADS1293_TRIGGER_OWN_THREAD
-	bool "Use dedicated thread"
-	help
-	  Use a dedicated thread for trigger handling.
-	  Lower latency but uses more memory.
-
-endchoice
-
-config ADS1293_THREAD_STACK_SIZE
-	int "Stack size for dedicated trigger thread"
-	default 1024
-	depends on ADS1293_TRIGGER_OWN_THREAD
-	help
-	  Stack size for the ADS1293 dedicated trigger thread.
-
-config ADS1293_THREAD_PRIORITY
-	int "Priority of dedicated trigger thread"
-	default 10
-	depends on ADS1293_TRIGGER_OWN_THREAD
-	help
-	  Priority for the ADS1293 dedicated trigger thread.
-
-endif # ADS1293_TRIGGER
-
-config ADS1293_DEFAULT_SAMPLE_RATE
-	int "Default sample rate in Hz"
-	default 256
-	range 50 25600
-	help
-	  Default ECG sample rate in Hz. Common values:
-	  - 256 Hz: Standard diagnostic ECG
-	  - 512 Hz: High resolution
-	  - 128 Hz: Low power mode
-
-config ADS1293_AUTO_START
-	bool "Automatically start conversion on init"
-	default n
-	help
-	  If enabled, ECG conversion starts automatically after
-	  device initialization. Otherwise, application must call
-	  ads1293_start() to begin acquisition.
-
 config ADS1293_LEAD_OFF_DETECTION
 	bool "Enable lead-off detection"
 	default y
@@ -96,11 +35,91 @@ config ADS1293_LEAD_OFF_DETECTION
 	  Enable electrode lead-off detection feature.
 	  Useful for detecting disconnected electrodes.
 
+config ADS1293_LEAD_OFF_AC_ENABLE
+	bool "Enable AC lead-off detection"
+	default n
+	help
+	  Enable AC lead-off detection mode (in addition to DC if enabled).
+	  Reset value is disabled.
+
+config ADS1293_LEAD_OFF_THRESHOLD
+	int "Lead-off comparator threshold (0-7)"
+	range 0 7
+	default 0
+	help
+	  Lead-off comparator threshold. Reset value is 0.
+
+config ADS1293_LEAD_OFF_CURRENT
+	hex "Lead-off detection current"
+	range 0x0 0xff
+	default 0x00
+	help
+	  Lead-off detection current magnitude (register value).
+	  Reset value is 0x00.
+
+config ADS1293_LEAD_OFF_INPUT_MASK
+	hex "Lead-off input mask"
+	range 0x0 0xff
+	default 0x00
+	help
+	  Bitmask of inputs to monitor for lead-off detection.
+	  Reset value is 0x00.
+
 config ADS1293_RLD_ENABLE
 	bool "Enable Right Leg Drive"
 	default y
 	help
 	  Enable the Right Leg Drive (RLD) amplifier for
 	  common-mode noise rejection.
+
+config ADS1293_SAMPLE_RATE
+	int "Default sample rate (Hz)"
+	default 256
+	range 50 1024
+	help
+	  Default ECG sample rate in Hz.
+	  The driver calculates the closest achievable rate using the
+	  R1, R2, R3 decimation factors.
+
+	  Common values:
+	    256 Hz (default) - standard ECG
+	    512 Hz - higher resolution
+	    1024 Hz - maximum resolution
+
+	  Actual rate depends on clock source (internal or external).
+
+config ADS1293_HIRES_MASK
+	hex "AFE high-resolution enable mask (EN_HIRES_CHx)"
+	default 0x0
+	range 0x0 0x7
+	help
+	  Bitmask enabling high-resolution mode per channel in AFE_RES.
+	  Bit 0 = CH1, bit 1 = CH2, bit 2 = CH3. Reset value is 0.
+
+config ADS1293_FS_HIGH_MASK
+	hex "AFE high-frequency clock mask (FS_HIGH_CHx)"
+	default 0x0
+	range 0x0 0x7
+	help
+	  Bitmask enabling 204.8 kHz modulator clock per channel in AFE_RES.
+	  Bit 0 = CH1, bit 1 = CH2, bit 2 = CH3. Reset value is 0.
+
+config ADS1293_DRDY_IRQ_ENABLE
+	bool "Enable DRDY interrupt GPIO support"
+	default y
+	help
+	  Enable support for the DRDY (Data Ready) pin interrupt functionality.
+	  When disabled, the driver will not configure or use the DRDY GPIO
+	  for interrupts even if specified in devicetree. Use polling instead.
+	  Disable this if the DRDY pin is not connected or not needed.
+
+config ADS1293_ALARM_IRQ_ENABLE
+	bool "Enable ALARM interrupt GPIO support"
+	default y
+	help
+	  Enable support for the ALARM pin interrupt functionality.
+	  When disabled, the driver will not configure or use the ALARM GPIO
+	  for interrupts even if specified in devicetree.
+	  Disable this if the ALARM pin is not connected or not needed.
 
 endif # ADS1293

@@ -46,15 +46,18 @@ typedef enum {
 
 /**
  * @brief Input electrode selection
+ *
+ * Note: Uses IN_x naming to avoid conflict with ADS1293_INPUT_INx macros
+ * in ads1293_registers.h
  */
 typedef enum {
-	ADS1293_INPUT_NONE = 0,
-	ADS1293_INPUT_IN1  = 1,
-	ADS1293_INPUT_IN2  = 2,
-	ADS1293_INPUT_IN3  = 3,
-	ADS1293_INPUT_IN4  = 4,
-	ADS1293_INPUT_IN5  = 5,
-	ADS1293_INPUT_IN6  = 6
+	ADS1293_IN_NONE = 0,
+	ADS1293_IN_1    = 1,
+	ADS1293_IN_2    = 2,
+	ADS1293_IN_3    = 3,
+	ADS1293_IN_4    = 4,
+	ADS1293_IN_5    = 5,
+	ADS1293_IN_6    = 6
 } ads1293_input_t;
 
 /**
@@ -89,6 +92,22 @@ typedef enum {
 	ADS1293_STATE_CONVERTING,
 	ADS1293_STATE_ERROR
 } ads1293_state_t;
+
+/**
+ * @brief AFE sensitivity mode (EN_HIRES)
+ */
+typedef enum {
+	ADS1293_SENSITIVITY_LOW_POWER = 0,
+	ADS1293_SENSITIVITY_HIGH_RES = 1
+} ads1293_sensitivity_t;
+
+/**
+ * @brief AFE gain mode (FS_HIGH clock)
+ */
+typedef enum {
+	ADS1293_GAIN_LOW = 0,
+	ADS1293_GAIN_HIGH = 1
+} ads1293_gain_t;
 
 
 /* ============================================================================
@@ -174,6 +193,10 @@ typedef struct {
 
 	/* Interrupt configuration */
 	ads1293_drdy_src_t drdy_source;
+
+	/* AFE resolution control */
+	uint8_t hires_mask;                         /**< EN_HIRES_CHx mask (bit 0=CH1) */
+	uint8_t fs_high_mask;                       /**< FS_HIGH_CHx mask (bit 0=CH1) */
 } ads1293_config_t;
 
 

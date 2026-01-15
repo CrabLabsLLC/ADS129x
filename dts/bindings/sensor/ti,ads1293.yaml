@@ -11,13 +11,13 @@ description: |
 
   Clock Source Configuration:
   The ADS1293 requires a clock source, which can be either:
-    1. External crystal - Connected directly to the chip's XTAL1/XTAL2 pins
+    1. Internal oscillator - Uses the chip's built-in 204.8 kHz oscillator
     2. MCU-provided clock - PWM output connected to the chip's CLKIN pin
 
-  If the clkin-pwms property is present, the driver uses MCU-provided
-  clock via PWM. Otherwise, it assumes an external crystal is present.
+  If the pwms property is present with a "clkin" name, the driver uses
+  MCU-provided clock via PWM. Otherwise, it uses the internal oscillator.
 
-  Example with external crystal (default):
+  Example with internal oscillator (default):
 
     &spi0 {
       ads1293: ads1293@0 {
@@ -38,7 +38,8 @@ description: |
         spi-max-frequency = <4000000>;
         drdy-gpios = <&gpio0 10 GPIO_ACTIVE_LOW>;
         reset-gpios = <&gpio0 12 GPIO_ACTIVE_LOW>;
-        clkin-pwms = <&pwm0 0 PWM_HZ(204800) PWM_POLARITY_NORMAL>;
+        pwms = <&pwm0 0 PWM_HZ(204800) PWM_POLARITY_NORMAL>;
+        pwm-names = "clkin";
       };
     };
 
@@ -73,7 +74,7 @@ properties:
       If not provided, software must ensure proper power-on
       reset timing.
 
-  clkin-pwms:
+  pwms:
     type: phandle-array
     description: |
       PWM channel used to generate the clock signal for the
@@ -86,17 +87,103 @@ properties:
       The ADS1293 supports clock frequencies from 128 kHz to
       512 kHz. The internal oscillator frequency is 204.8 kHz.
 
-      If this property is absent, the driver assumes an external
-      crystal is connected to the XTAL1/XTAL2 pins.
+      If this property is absent, the driver uses the internal
+      oscillator.
 
       Example for 204.8 kHz clock:
-        clkin-pwms = <&pwm0 0 PWM_HZ(204800) PWM_POLARITY_NORMAL>;
+        pwms = <&pwm0 0 PWM_HZ(204800) PWM_POLARITY_NORMAL>;
+        pwm-names = "clkin";
 
-      Example for 256 kHz clock:
-        clkin-pwms = <&pwm0 0 PWM_HZ(256000) PWM_POLARITY_NORMAL>;
+  pwm-names:
+    type: string-array
+    description: |
+      Names for the PWM channels. Should be "clkin" for the clock input.
 
   vin-supply:
     type: phandle
     description: |
       Reference to the regulator that supplies power to the device.
       Used for power management.
+
+  # =========================================================================
+  # Per-Channel Input Routing
+  # =========================================================================
+  # The ADS1293 has 3 ECG channels and 6 physical inputs (IN1-IN6).
+  # Each channel measures a differential voltage between two inputs.
+  # This routing is HARDWARE-SPECIFIC and depends on PCB electrode wiring.
+  #
+  # Input values match the physical pin names:
+  #   0 = NC  (not connected - disables this input)
+  #   1 = IN1 (typically RA - Right Arm)
+  #   2 = IN2 (typically LA - Left Arm)
+  #   3 = IN3 (typically LL - Left Leg)
+  #   4 = IN4 (typically RL - Right Leg / Reference)
+  #   5 = IN5 (typically V1 precordial)
+  #   6 = IN6 (Wilson Central Terminal or precordial)
+  #
+  # Configuration Options:
+  #
+  # 1. Standard bipolar leads (Lead I, II, III):
+  #      ch1-inputs = <2 1>;  /* LA - RA = Lead I   */
+  #      ch2-inputs = <3 1>;  /* LL - RA = Lead II  */
+  #      ch3-inputs = <3 2>;  /* LL - LA = Lead III */
+  #
+  # 2. Wilson Central Terminal reference (recommended for cleaner signals):
+  #    Route Wilson terminal to IN6, then use IN6 as common reference:
+  #      ch1-inputs = <1 6>;  /* IN1 - WCT = unipolar RA */
+  #      ch2-inputs = <2 6>;  /* IN2 - WCT = unipolar LA */
+  #      ch3-inputs = <3 6>;  /* IN3 - WCT = unipolar LL */
+  #    Benefits: Better noise rejection, cleaner unipolar signals
+  # =========================================================================
+
+  ch1-inputs:
+    type: array
+    description: |
+      Channel 1 differential input routing: <positive negative>
+
+      Specifies which physical inputs connect to Channel 1.
+      Format: <INx_positive INx_negative> where x is 0-6.
+
+      Input values (match physical pin names):
+        0 = NC  (not connected)
+        1 = IN1 (typically RA - Right Arm)
+        2 = IN2 (typically LA - Left Arm)
+        3 = IN3 (typically LL - Left Leg)
+        4 = IN4 (typically RL / Reference)
+        5 = IN5 (typically V1 precordial)
+        6 = IN6 (typically V2 precordial)
+
+      Example for Lead I (LA - RA):
+        ch1-inputs = <2 1>;  /* IN2(+) - IN1(-) */
+
+      Default: <2 1> (IN2 - IN1 = Lead I)
+
+  ch2-inputs:
+    type: array
+    description: |
+      Channel 2 differential input routing: <positive negative>
+
+      Specifies which physical inputs connect to Channel 2.
+      Format: <INx_positive INx_negative> where x is 0-6.
+
+      Example for Lead II (LL - RA):
+        ch2-inputs = <3 1>;  /* IN3(+) - IN1(-) */
+
+      Default: <3 1> (IN3 - IN1 = Lead II)
+
+  ch3-inputs:
+    type: array
+    description: |
+      Channel 3 differential input routing: <positive negative>
+
+      Specifies which physical inputs connect to Channel 3.
+      Format: <INx_positive INx_negative> where x is 0-6.
+
+      Example for Lead III (LL - LA):
+        ch3-inputs = <3 2>;  /* IN3(+) - IN2(-) */
+
+      Default: <3 2> (IN3 - IN2 = Lead III)
+
+      Note: Sample rate and lead-off detection are configured via Kconfig
+      (CONFIG_ADS1293_SAMPLE_RATE, CONFIG_ADS1293_LEAD_OFF_DETECTION) as
+      they are runtime/build-time settings, not hardware-specific.

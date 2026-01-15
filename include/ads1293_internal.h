@@ -11,6 +11,7 @@
 #ifndef ADS1293_INTERNAL_H_
 #define ADS1293_INTERNAL_H_
 
+#include <zephyr/sys/atomic.h>
 #include "ads1293.h"
 #include "ads1293_hal.h"
 
@@ -50,6 +51,9 @@ struct ads1293_dev {
 	ads1293_alarm_callback_t alarm_callback;
 	void *alarm_user_data;
 
+	/* Sample counter (incremented on each DRDY interrupt) */
+	atomic_t sample_count;
+
 	/* Initialization flag */
 	bool initialized;
 };
@@ -83,23 +87,13 @@ int ads1293_read_regs(ads1293_dev_t *dev, uint8_t reg,
 
 
 /* ============================================================================
- * Internal Initialization
+ * Internal Configuration
  * ============================================================================ */
-
-/**
- * @brief Initialize device hardware
- */
-int ads1293_hw_init(ads1293_dev_t *dev);
 
 /**
  * @brief Apply configuration to hardware
  */
 int ads1293_apply_config(ads1293_dev_t *dev, const ads1293_config_t *config);
-
-/**
- * @brief Verify device ID
- */
-int ads1293_verify_device(ads1293_dev_t *dev);
 
 
 /* ============================================================================
@@ -114,7 +108,7 @@ void ads1293_drdy_isr(void *user_data);
 /**
  * @brief ALARM interrupt handler (called from HAL)
  */
-void ads1293_alarm_isr(void *user_data);
+void ads1293_alarm_isr(uint8_t error_status, void *user_data);
 
 
 #ifdef __cplusplus

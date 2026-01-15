@@ -118,6 +118,14 @@ extern "C" {
 #define ADS1293_REG_DATA_CH3_ECG_M      0x3E
 #define ADS1293_REG_DATA_CH3_ECG_L      0x3F
 
+/* AFE_RES bit masks */
+#define ADS1293_AFE_RES_FS_HIGH_CH3   (1u << 5)
+#define ADS1293_AFE_RES_FS_HIGH_CH2   (1u << 4)
+#define ADS1293_AFE_RES_FS_HIGH_CH1   (1u << 3)
+#define ADS1293_AFE_RES_EN_HIRES_CH3  (1u << 2)
+#define ADS1293_AFE_RES_EN_HIRES_CH2  (1u << 1)
+#define ADS1293_AFE_RES_EN_HIRES_CH1  (1u << 0)
+
 /* Revision ID (Read-Only) */
 #define ADS1293_REG_REVID               0x40
 

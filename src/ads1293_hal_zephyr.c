@@ -12,41 +12,10 @@
 #include <zephyr/drivers/pwm.h>
 #include <zephyr/logging/log.h>
 
-#include "ads1293_hal.h"
+#include "ads1293_hal_zephyr.h"
 #include "ads1293_registers.h"
 
 LOG_MODULE_REGISTER(ads1293_hal, CONFIG_SENSOR_LOG_LEVEL);
-
-/* ============================================================================
- * HAL Context Structure (Zephyr-specific)
- * ============================================================================ */
-
-struct ads1293_hal_ctx
-{
-	/* SPI device */
-	const struct spi_dt_spec *spi;
-
-	/* GPIO pins */
-	const struct gpio_dt_spec *drdy_gpio;
-	const struct gpio_dt_spec *alarm_gpio;
-	const struct gpio_dt_spec *reset_gpio;
-
-	/* CLKIN PWM (for MCU-provided clock) */
-	const struct pwm_dt_spec *clkin_pwm;
-	uint32_t clkin_period_ns;
-	bool clkin_running;
-
-	/* Interrupt callbacks */
-	struct gpio_callback drdy_callback_data;
-	struct gpio_callback alarm_callback_data;
-	ads1293_drdy_callback_t drdy_callback;
-	void *drdy_user_data;
-	ads1293_alarm_callback_t alarm_callback;
-	void *alarm_user_data;
-
-	/* Initialization state */
-	bool initialized;
-};
 
 
 /* ============================================================================
@@ -63,7 +32,7 @@ int ads1293_hal_reg_read(ads1293_hal_ctx_t *const context,
 	}
 
 	uint8_t transmit_buffer[2] = { register_address | ADS1293_SPI_READ_FLAG, 0x00 };
-	uint8_t receive_buffer[2] = { 0 };
+	uint8_t receive_buffer[2] = { 0xFF, 0xFF };  /* Pre-fill to detect if SPI actually writes */
 
 	const struct spi_buf transmit_descriptors[] = {
 		{ .buf = transmit_buffer, .len = 2 }
@@ -199,6 +168,7 @@ int ads1293_hal_reset_assert(ads1293_hal_ctx_t *const context)
 		return ADS1293_ERR_IO;
 	}
 
+	LOG_DBG("Reset asserted (pin should be LOW)");
 	return ADS1293_OK;
 }
 
@@ -217,6 +187,9 @@ int ads1293_hal_reset_release(ads1293_hal_ctx_t *const context)
 		return ADS1293_ERR_IO;
 	}
 
+	/* Read back the pin to verify it's actually high */
+	int pin_val = gpio_pin_get_dt(context->reset_gpio);
+	LOG_DBG("Reset released (pin should be HIGH, reads: %d)", pin_val);
 	return ADS1293_OK;
 }
 
@@ -260,8 +233,13 @@ int ads1293_hal_drdy_int_enable(ads1293_hal_ctx_t *const context,
                                 const ads1293_drdy_callback_t callback,
                                 void *const user_data)
 {
+#if !IS_ENABLED(CONFIG_ADS1293_DRDY_IRQ_ENABLE)
+	LOG_WRN("DRDY IRQ support disabled via CONFIG_ADS1293_DRDY_IRQ_ENABLE");
+	return ADS1293_ERR_INVALID_PARAM;
+#else
 	if (!ads1293_hal_has_drdy(context))
 	{
+		LOG_ERR("DRDY GPIO not configured");
 		return ADS1293_ERR_INVALID_PARAM;
 	}
 
@@ -286,7 +264,13 @@ int ads1293_hal_drdy_int_enable(ads1293_hal_ctx_t *const context,
 		return ADS1293_ERR_IO;
 	}
 
+	LOG_DBG("DRDY interrupt enabled on GPIO port %s pin %u (flags=0x%x)",
+		context->drdy_gpio->port->name,
+		context->drdy_gpio->pin,
+		context->drdy_gpio->dt_flags);
+
 	return ADS1293_OK;
+#endif /* CONFIG_ADS1293_DRDY_IRQ_ENABLE */
 }
 
 int ads1293_hal_drdy_int_disable(ads1293_hal_ctx_t *const context)
@@ -347,8 +331,13 @@ int ads1293_hal_alarm_int_enable(ads1293_hal_ctx_t *const context,
                                  const ads1293_alarm_callback_t callback,
                                  void *const user_data)
 {
+#if !IS_ENABLED(CONFIG_ADS1293_ALARM_IRQ_ENABLE)
+	LOG_WRN("ALARM IRQ support disabled via CONFIG_ADS1293_ALARM_IRQ_ENABLE");
+	return ADS1293_ERR_INVALID_PARAM;
+#else
 	if (!ads1293_hal_has_alarm(context))
 	{
+		LOG_ERR("ALARM GPIO not configured");
 		return ADS1293_ERR_INVALID_PARAM;
 	}
 
@@ -373,7 +362,9 @@ int ads1293_hal_alarm_int_enable(ads1293_hal_ctx_t *const context,
 		return ADS1293_ERR_IO;
 	}
 
+	LOG_DBG("ALARM interrupt enabled");
 	return ADS1293_OK;
+#endif /* CONFIG_ADS1293_ALARM_IRQ_ENABLE */
 }
 
 int ads1293_hal_alarm_int_disable(ads1293_hal_ctx_t *const context)
@@ -420,6 +411,11 @@ int ads1293_hal_clkin_start(ads1293_hal_ctx_t *const context)
 	const uint32_t period_ns = context->clkin_period_ns;
 	const uint32_t pulse_ns = period_ns / 2;
 
+	LOG_DBG("Starting CLKIN PWM: period=%u ns, pulse=%u ns (50%% duty), freq=%u Hz",
+		period_ns, pulse_ns, (uint32_t)(1000000000ULL / period_ns));
+	LOG_DBG("  PWM device=%s, channel=%u", context->clkin_pwm->dev->name,
+		context->clkin_pwm->channel);
+
 	const int pwm_result = pwm_set_dt(context->clkin_pwm, period_ns, pulse_ns);
 	if (pwm_result < 0)
 	{
@@ -428,8 +424,7 @@ int ads1293_hal_clkin_start(ads1293_hal_ctx_t *const context)
 	}
 
 	context->clkin_running = true;
-	LOG_DBG("CLKIN started: period=%u ns, freq=%u Hz",
-	        period_ns, (uint32_t)(1000000000ULL / period_ns));
+	LOG_DBG("CLKIN PWM started successfully (result=%d)", pwm_result);
 
 	return ADS1293_OK;
 }
@@ -580,7 +575,7 @@ int ads1293_hal_init(ads1293_hal_ctx_t *const context)
 		context->clkin_running = false;
 
 		const uint32_t frequency_hz = ads1293_hal_get_clkin_frequency(context);
-		LOG_INF("CLKIN PWM configured: %u Hz", frequency_hz);
+		LOG_DBG("CLKIN PWM configured: %u Hz", frequency_hz);
 
 		/* Validate frequency is within ADS1293 acceptable range */
 		if (frequency_hz < 128000 || frequency_hz > 512000)
@@ -591,7 +586,7 @@ int ads1293_hal_init(ads1293_hal_ctx_t *const context)
 	}
 	else
 	{
-		LOG_INF("Using external crystal for clock source");
+		LOG_DBG("Using external crystal for clock source");
 	}
 
 	context->initialized = true;

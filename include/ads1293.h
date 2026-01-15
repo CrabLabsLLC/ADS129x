@@ -166,10 +166,10 @@ int ads1293_set_channels_enabled(ads1293_dev_t *dev, uint8_t channel_mask);
  * @brief Configure sample rate via decimation settings
  *
  * Sample rate = f_CLK / (R1 * R2 * R3)
- * With internal 204.8 kHz clock, common rates:
- * - 256 Hz:  R1=5, R2=4, R3=40
- * - 512 Hz:  R1=5, R2=4, R3=20
- * - 1024 Hz: R1=5, R2=4, R3=10
+ * With internal 409.6 kHz clock, common rates:
+ * - 256 Hz:  R1=5, R2=4, R3=80
+ * - 512 Hz:  R1=5, R2=4, R3=40
+ * - 1024 Hz: R1=5, R2=4, R3=20
  *
  * @param dev Device handle
  * @param r1 First stage decimation (use ADS1293_R1_DIVx)
@@ -181,6 +181,40 @@ int ads1293_set_sample_rate(ads1293_dev_t *dev,
 			    ads1293_r1_rate_t r1,
 			    uint8_t r2,
 			    uint8_t r3);
+
+/**
+ * @brief Configure AFE resolution per channel
+ *
+ * @param dev Device handle
+ * @param hires_mask EN_HIRES_CHx mask (bit 0=CH1)
+ * @param fs_high_mask FS_HIGH_CHx mask (bit 0=CH1)
+ * @return 0 on success, negative error code on failure
+ */
+int ads1293_set_afe_res(ads1293_dev_t *dev, uint8_t hires_mask, uint8_t fs_high_mask);
+
+/**
+ * @brief Set sensitivity for a single channel (EN_HIRES)
+ *
+ * @param dev Device handle
+ * @param channel Channel index
+ * @param sensitivity Sensitivity mode
+ * @return 0 on success, negative error code on failure
+ */
+int ads1293_set_channel_sensitivity(ads1293_dev_t *dev,
+				    ads1293_channel_t channel,
+				    ads1293_sensitivity_t sensitivity);
+
+/**
+ * @brief Set gain for a single channel (FS_HIGH)
+ *
+ * @param dev Device handle
+ * @param channel Channel index
+ * @param gain Gain mode
+ * @return 0 on success, negative error code on failure
+ */
+int ads1293_set_channel_gain(ads1293_dev_t *dev,
+			     ads1293_channel_t channel,
+			     ads1293_gain_t gain);
 
 
 /* ============================================================================
@@ -251,6 +285,33 @@ int ads1293_set_drdy_callback(ads1293_dev_t *dev,
 int ads1293_set_alarm_callback(ads1293_dev_t *dev,
 			       ads1293_alarm_callback_t callback,
 			       void *user_data);
+
+/**
+ * @brief Get sample counter (incremented on each DRDY interrupt)
+ *
+ * Use this to check if samples are available without registering a callback.
+ *
+ * @param dev Device handle
+ * @return Number of DRDY events since last reset/read
+ */
+uint32_t ads1293_get_sample_count(const ads1293_dev_t *dev);
+
+/**
+ * @brief Reset sample counter to zero
+ *
+ * @param dev Device handle
+ */
+void ads1293_reset_sample_count(ads1293_dev_t *dev);
+
+/**
+ * @brief Get and reset sample counter atomically
+ *
+ * Useful for checking how many samples accumulated since last check.
+ *
+ * @param dev Device handle
+ * @return Number of DRDY events since last call
+ */
+uint32_t ads1293_get_and_reset_sample_count(ads1293_dev_t *dev);
 
 
 /* ============================================================================
@@ -359,6 +420,51 @@ static inline int32_t ads1293_raw_to_uv(int32_t raw)
 	/* Using 64-bit intermediate to avoid overflow */
 	return (int32_t)(((int64_t)raw * 800000LL) / 16777216LL);
 }
+
+
+/* ============================================================================
+ * GPIO Read Functions (for polling mode)
+ * ============================================================================ */
+
+/**
+ * @brief Read the current state of the DRDY GPIO pin
+ *
+ * Useful for polling mode when DRDY interrupts are disabled.
+ * DRDY is active-low (0 = data ready, 1 = no data).
+ *
+ * @param dev   Device handle
+ * @param state Output: GPIO pin state (0 = active/low, 1 = inactive/high)
+ * @return 0 on success, ADS1293_ERR_* on failure
+ */
+int ads1293_read_drdy_gpio(ads1293_dev_t *dev, int *state);
+
+/**
+ * @brief Read the current state of the ALARM GPIO pin
+ *
+ * Useful for polling mode when ALARM interrupts are disabled.
+ * ALARM is active-low (0 = alarm active, 1 = no alarm).
+ *
+ * @param dev   Device handle
+ * @param state Output: GPIO pin state (0 = active/low, 1 = inactive/high)
+ * @return 0 on success, ADS1293_ERR_* on failure
+ */
+int ads1293_read_alarm_gpio(ads1293_dev_t *dev, int *state);
+
+/**
+ * @brief Check if DRDY GPIO is configured and available
+ *
+ * @param dev Device handle
+ * @return true if DRDY GPIO is configured, false otherwise
+ */
+bool ads1293_has_drdy_gpio(ads1293_dev_t *dev);
+
+/**
+ * @brief Check if ALARM GPIO is configured and available
+ *
+ * @param dev Device handle
+ * @return true if ALARM GPIO is configured, false otherwise
+ */
+bool ads1293_has_alarm_gpio(ads1293_dev_t *dev);
 
 
 #ifdef __cplusplus

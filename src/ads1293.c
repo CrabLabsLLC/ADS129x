@@ -15,12 +15,15 @@
 #include <zephyr/drivers/spi.h>
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/drivers/pwm.h>
+#include <zephyr/drivers/regulator.h>
 #include <zephyr/logging/log.h>
+#include <zephyr/sys/util.h>
 #include <string.h>
 
 #include "ads1293.h"
 #include "ads1293_internal.h"
 #include "ads1293_registers.h"
+#include "ads1293_hal_zephyr.h"
 
 LOG_MODULE_REGISTER(ads1293, CONFIG_SENSOR_LOG_LEVEL);
 
@@ -147,24 +150,34 @@ int ads1293_reset(ads1293_dev_t *const device)
 		return ADS1293_ERR_INVALID_PARAM;
 	}
 
-	/* Assert reset */
+	LOG_DBG("Asserting reset");
+
+	/* Assert reset (active low - drive low) */
 	int result = ads1293_hal_reset_assert(device->hal);
 	if (result != ADS1293_OK)
 	{
 		return result;
 	}
 
+	/* Hold reset low for at least 2 clock cycles (per datasheet)
+	 * At 409.6 kHz, 2 cycles = ~5us, use 100us to be very safe
+	 */
 	ads1293_hal_delay_us(device->hal, 100);
 
-	/* Release reset */
+	LOG_DBG("Releasing reset");
+
+	/* Release reset (drive high) */
 	result = ads1293_hal_reset_release(device->hal);
 	if (result != ADS1293_OK)
 	{
 		return result;
 	}
 
-	/* Wait for device to stabilize */
-	ads1293_hal_delay_ms(device->hal, 10);
+	/* Wait for device to stabilize after reset - needs > 2^16 clock cycles
+	 * At 409.6 kHz: 2^16 / 409600 = ~160ms
+	 * Use 200ms to be safe
+	 */
+	ads1293_hal_delay_ms(device->hal, 200);
 
 	device->state = ADS1293_STATE_STANDBY;
 	LOG_DBG("Hardware reset complete");
@@ -193,12 +206,12 @@ void ads1293_config_defaults(ads1293_config_t *const config)
 	 * CH2: Lead II = LL - RA (IN3 - IN1)
 	 * CH3: Lead III = LL - LA (IN3 - IN2)
 	 */
-	config->inputs[0].positive = ADS1293_INPUT_IN2;
-	config->inputs[0].negative = ADS1293_INPUT_IN1;
-	config->inputs[1].positive = ADS1293_INPUT_IN3;
-	config->inputs[1].negative = ADS1293_INPUT_IN1;
-	config->inputs[2].positive = ADS1293_INPUT_IN3;
-	config->inputs[2].negative = ADS1293_INPUT_IN2;
+	config->inputs[0].positive = ADS1293_IN_2;
+	config->inputs[0].negative = ADS1293_IN_1;
+	config->inputs[1].positive = ADS1293_IN_3;
+	config->inputs[1].negative = ADS1293_IN_1;
+	config->inputs[2].positive = ADS1293_IN_3;
+	config->inputs[2].negative = ADS1293_IN_2;
 
 	/* Decimation for ~256 Hz sample rate:
 	 * 409600 / (5 * 4 * 80) = 256 Hz
@@ -222,6 +235,25 @@ void ads1293_config_defaults(ads1293_config_t *const config)
 
 	/* DRDY from CH1 24-bit data */
 	config->drdy_source = ADS1293_DRDY_SRC_CH1_24BIT;
+
+	/* Default to low-power AFE settings */
+	config->hires_mask = 0;
+	config->fs_high_mask = 0;
+}
+
+static uint8_t ads1293_afe_res_from_masks(uint8_t hires_mask, uint8_t fs_high_mask)
+{
+	uint8_t value = 0;
+
+	if (fs_high_mask & BIT(0)) value |= ADS1293_AFE_RES_FS_HIGH_CH1;
+	if (fs_high_mask & BIT(1)) value |= ADS1293_AFE_RES_FS_HIGH_CH2;
+	if (fs_high_mask & BIT(2)) value |= ADS1293_AFE_RES_FS_HIGH_CH3;
+
+	if (hires_mask & BIT(0)) value |= ADS1293_AFE_RES_EN_HIRES_CH1;
+	if (hires_mask & BIT(1)) value |= ADS1293_AFE_RES_EN_HIRES_CH2;
+	if (hires_mask & BIT(2)) value |= ADS1293_AFE_RES_EN_HIRES_CH3;
+
+	return value;
 }
 
 int ads1293_apply_config(ads1293_dev_t *const device, const ads1293_config_t *const config)
@@ -319,6 +351,15 @@ int ads1293_apply_config(ads1293_dev_t *const device, const ads1293_config_t *co
 
 	/* Configure DRDY source */
 	write_result = ads1293_write_reg(device, ADS1293_REG_DRDYB_SRC, config->drdy_source);
+	if (write_result != ADS1293_OK)
+	{
+		return write_result;
+	}
+
+	/* Configure AFE resolution */
+	const uint8_t afe_res = ads1293_afe_res_from_masks(config->hires_mask & 0x07,
+							  config->fs_high_mask & 0x07);
+	write_result = ads1293_write_reg(device, ADS1293_REG_AFE_RES, afe_res);
 	if (write_result != ADS1293_OK)
 	{
 		return write_result;
@@ -481,6 +522,73 @@ int ads1293_set_sample_rate(ads1293_dev_t *const device,
 	device->config.decimation.r3[2] = r3;
 
 	return ADS1293_OK;
+}
+
+int ads1293_set_afe_res(ads1293_dev_t *const device,
+			const uint8_t hires_mask,
+			const uint8_t fs_high_mask)
+{
+	if (!ads1293_is_ready(device))
+	{
+		return ADS1293_ERR_INVALID_PARAM;
+	}
+
+	const uint8_t hires = hires_mask & 0x07;
+	const uint8_t fs_high = fs_high_mask & 0x07;
+	const uint8_t afe_res = ads1293_afe_res_from_masks(hires, fs_high);
+	const int write_result = ads1293_write_reg(device, ADS1293_REG_AFE_RES, afe_res);
+	if (write_result != ADS1293_OK)
+	{
+		return write_result;
+	}
+
+	device->config.hires_mask = hires;
+	device->config.fs_high_mask = fs_high;
+	return ADS1293_OK;
+}
+
+int ads1293_set_channel_sensitivity(ads1293_dev_t *const device,
+				    const ads1293_channel_t channel,
+				    const ads1293_sensitivity_t sensitivity)
+{
+	if (!ads1293_is_ready(device) || channel >= ADS1293_NUM_CHANNELS)
+	{
+		return ADS1293_ERR_INVALID_PARAM;
+	}
+
+	uint8_t hires_mask = device->config.hires_mask & 0x07;
+	if (sensitivity == ADS1293_SENSITIVITY_HIGH_RES)
+	{
+		hires_mask |= BIT(channel);
+	}
+	else
+	{
+		hires_mask &= (uint8_t)~BIT(channel);
+	}
+
+	return ads1293_set_afe_res(device, hires_mask, device->config.fs_high_mask);
+}
+
+int ads1293_set_channel_gain(ads1293_dev_t *const device,
+			     const ads1293_channel_t channel,
+			     const ads1293_gain_t gain)
+{
+	if (!ads1293_is_ready(device) || channel >= ADS1293_NUM_CHANNELS)
+	{
+		return ADS1293_ERR_INVALID_PARAM;
+	}
+
+	uint8_t fs_high_mask = device->config.fs_high_mask & 0x07;
+	if (gain == ADS1293_GAIN_HIGH)
+	{
+		fs_high_mask |= BIT(channel);
+	}
+	else
+	{
+		fs_high_mask &= (uint8_t)~BIT(channel);
+	}
+
+	return ads1293_set_afe_res(device, device->config.hires_mask, fs_high_mask);
 }
 
 
@@ -665,20 +773,65 @@ void ads1293_drdy_isr(void *const user_data)
 {
 	ads1293_dev_t *const device = (ads1293_dev_t *)user_data;
 
-	if (device && device->drdy_callback)
+	if (device)
 	{
-		device->drdy_callback(device->drdy_user_data);
+		/* Always increment sample counter */
+		atomic_inc(&device->sample_count);
+
+		if (device->drdy_callback)
+		{
+			device->drdy_callback(device->drdy_user_data);
+		}
 	}
 }
 
-void ads1293_alarm_isr(void *const user_data)
+void ads1293_alarm_isr(uint8_t error_status, void *const user_data)
 {
 	ads1293_dev_t *const device = (ads1293_dev_t *)user_data;
 
-	if (device && device->alarm_callback)
+	/* Store error status from ISR context */
+	if (device)
 	{
-		device->alarm_callback(device->error_status, device->alarm_user_data);
+		device->error_status = error_status;
+
+		if (device->alarm_callback)
+		{
+			device->alarm_callback(error_status, device->alarm_user_data);
+		}
 	}
+}
+
+
+/* ============================================================================
+ * Sample Counter API
+ * ============================================================================ */
+
+uint32_t ads1293_get_sample_count(const ads1293_dev_t *const device)
+{
+	if (!device)
+	{
+		return 0;
+	}
+
+	return atomic_get((atomic_t *)&device->sample_count);
+}
+
+void ads1293_reset_sample_count(ads1293_dev_t *const device)
+{
+	if (device)
+	{
+		atomic_set(&device->sample_count, 0);
+	}
+}
+
+uint32_t ads1293_get_and_reset_sample_count(ads1293_dev_t *const device)
+{
+	if (!device)
+	{
+		return 0;
+	}
+
+	return atomic_clear(&device->sample_count);
 }
 
 
@@ -865,7 +1018,16 @@ struct ads1293_zephyr_config
 	struct gpio_dt_spec alarm_gpio;
 	struct gpio_dt_spec reset_gpio;
 	struct pwm_dt_spec clkin_pwm;
+	const struct device *vin_supply;
 	bool has_clkin_pwm;
+
+	/* Per-channel input routing from devicetree */
+	bool has_ch1_inputs;
+	bool has_ch2_inputs;
+	bool has_ch3_inputs;
+	uint8_t ch1_inputs[2];  /* [positive, negative] */
+	uint8_t ch2_inputs[2];  /* [positive, negative] */
+	uint8_t ch3_inputs[2];  /* [positive, negative] */
 };
 
 static int ads1293_zephyr_init(const struct device *const zephyr_device)
@@ -874,8 +1036,38 @@ static int ads1293_zephyr_init(const struct device *const zephyr_device)
 	const struct ads1293_zephyr_config *const cfg = zephyr_device->config;
 	struct ads1293_dev *const device = &data->dev;
 	struct ads1293_hal_ctx *const hal = &data->hal_ctx;
+	int init_result;
 
 	LOG_INF("Initializing ADS1293...");
+
+	/* Enable power supply if configured */
+	if (cfg->vin_supply != NULL)
+	{
+		if (!device_is_ready(cfg->vin_supply))
+		{
+			LOG_ERR("VIN supply device not ready");
+			return -ENODEV;
+		}
+
+		LOG_INF("Enabling VIN supply for ADS1293...");
+		init_result = regulator_enable(cfg->vin_supply);
+		if (init_result < 0)
+		{
+			LOG_ERR("Failed to enable VIN supply: %d", init_result);
+			return init_result;
+		}
+
+		/* Wait for power to stabilize - ADS1293 needs time after power-up
+		 * Per datasheet: device needs 2^16 clock cycles after power-on
+		 * At 409.6 kHz: 2^16 / 409600 = ~160ms, use 200ms to be safe
+		 */
+		k_msleep(200);
+		LOG_DBG("VIN supply enabled, power stabilization complete");
+	}
+	else
+	{
+		LOG_WRN("No VIN supply configured for ADS1293!");
+	}
 
 	/* Setup HAL context with device tree bindings */
 	hal->spi = &cfg->spi;
@@ -885,7 +1077,7 @@ static int ads1293_zephyr_init(const struct device *const zephyr_device)
 	hal->clkin_pwm = cfg->has_clkin_pwm ? &cfg->clkin_pwm : NULL;
 
 	/* Initialize HAL */
-	int init_result = ads1293_hal_init(hal);
+	init_result = ads1293_hal_init(hal);
 	if (init_result != ADS1293_OK)
 	{
 		LOG_ERR("HAL init failed: %d", init_result);
@@ -904,8 +1096,13 @@ static int ads1293_zephyr_init(const struct device *const zephyr_device)
 			LOG_ERR("CLKIN start failed: %d", init_result);
 			return -EIO;
 		}
-		/* Wait for clock to stabilize */
-		ads1293_hal_delay_ms(hal, 5);
+		/* Wait for clock to stabilize - ADS1293 needs time to lock to external clock */
+		ads1293_hal_delay_ms(hal, 50);
+		LOG_DBG("CLKIN PWM started");
+	}
+	else
+	{
+		LOG_DBG("Using ADS1293 internal oscillator");
 	}
 
 	/* Perform hardware reset if available */
@@ -919,13 +1116,22 @@ static int ads1293_zephyr_init(const struct device *const zephyr_device)
 		}
 	}
 
-	/* Verify device */
+	/* Verify device by reading revision register */
 	init_result = ads1293_get_revision(device, &device->revision);
 	if (init_result != ADS1293_OK)
 	{
-		LOG_ERR("Failed to read revision: %d", init_result);
+		LOG_ERR("Failed to read ADS1293 revision: %d", init_result);
 		return -EIO;
 	}
+
+	/* ADS1293 expected revision is 0x01 per datasheet */
+	if (device->revision == 0x00 || device->revision == 0xFF)
+	{
+		LOG_ERR("ADS1293 not responding (revision=0x%02X) - check SPI wiring and power",
+			device->revision);
+		return -ENODEV;
+	}
+
 	LOG_INF("ADS1293 revision: 0x%02X", device->revision);
 
 	/* Initialize with defaults */
@@ -935,7 +1141,106 @@ static int ads1293_zephyr_init(const struct device *const zephyr_device)
 	if (cfg->has_clkin_pwm)
 	{
 		device->config.clock.use_external = true;
+		LOG_DBG("Using external clock via PWM");
 	}
+
+	/* Apply per-channel input routing from devicetree if specified.
+	 *
+	 * The ADS1293 FLEX_CHx_CN registers route physical inputs (IN1-IN6)
+	 * to each of the 3 ECG channels (CH1, CH2, CH3).
+	 * Each channel has a positive (INP) and negative (INN) input selection.
+	 * This allows any lead configuration (standard, augmented, precordial).
+	 *
+	 * Devicetree format per channel (values 0-6 match hardware pins):
+	 *   0 = NC (not connected)
+	 *   1-6 = IN1-IN6
+	 *
+	 * Example for standard 3-lead ECG:
+	 *   ch1-inputs = <2 1>;  Lead I   = IN2 - IN1 = LA - RA
+	 *   ch2-inputs = <3 1>;  Lead II  = IN3 - IN1 = LL - RA
+	 *   ch3-inputs = <3 2>;  Lead III = IN3 - IN2 = LL - LA
+	 */
+	if (cfg->has_ch1_inputs)
+	{
+		device->config.inputs[0].positive = (ads1293_input_t)cfg->ch1_inputs[0];
+		device->config.inputs[0].negative = (ads1293_input_t)cfg->ch1_inputs[1];
+		LOG_INF("CH1 routing: IN%u(+) - IN%u(-)",
+			cfg->ch1_inputs[0], cfg->ch1_inputs[1]);
+	}
+
+	if (cfg->has_ch2_inputs)
+	{
+		device->config.inputs[1].positive = (ads1293_input_t)cfg->ch2_inputs[0];
+		device->config.inputs[1].negative = (ads1293_input_t)cfg->ch2_inputs[1];
+		LOG_INF("CH2 routing: IN%u(+) - IN%u(-)",
+			cfg->ch2_inputs[0], cfg->ch2_inputs[1]);
+	}
+
+	if (cfg->has_ch3_inputs)
+	{
+		device->config.inputs[2].positive = (ads1293_input_t)cfg->ch3_inputs[0];
+		device->config.inputs[2].negative = (ads1293_input_t)cfg->ch3_inputs[1];
+		LOG_INF("CH3 routing: IN%u(+) - IN%u(-)",
+			cfg->ch3_inputs[0], cfg->ch3_inputs[1]);
+	}
+
+	/* Apply sample rate from Kconfig */
+	{
+		const uint16_t target_rate = CONFIG_ADS1293_SAMPLE_RATE;
+		/* Calculate R3 decimation for target sample rate
+		 * Sample rate = f_CLK / (R1 * R2 * R3)
+		 * With defaults: R1=5, R2=4, f_CLK=409.6kHz (internal) or 204.8kHz (external)
+		 * R3 = f_CLK / (R1 * R2 * target_rate)
+		 */
+		uint32_t clock_freq = cfg->has_clkin_pwm ? 204800 : 409600;
+		uint32_t r1_val = 5; /* Default R1 divisor */
+		uint32_t r2_val = 4; /* Default R2 divisor */
+		uint8_t r3 = (uint8_t)(clock_freq / (r1_val * r2_val * target_rate));
+
+		/* Clamp R3 to valid range */
+		if (r3 < 2)
+		{
+			r3 = 2;
+		}
+		else if (r3 > 255)
+		{
+			r3 = 255;
+		}
+
+		/* Apply R3 to all 3 channels (same sample rate) */
+		device->config.decimation.r3[0] = r3;
+		device->config.decimation.r3[1] = r3;
+		device->config.decimation.r3[2] = r3;
+
+		LOG_INF("Sample rate: target=%u Hz, R3=%u (actual ~%u Hz)",
+			target_rate, r3, clock_freq / (r1_val * r2_val * r3));
+	}
+
+	/* Apply AFE resolution masks from Kconfig */
+	device->config.hires_mask = CONFIG_ADS1293_HIRES_MASK & 0x07;
+	device->config.fs_high_mask = CONFIG_ADS1293_FS_HIGH_MASK & 0x07;
+
+	/* Apply lead-off detection from Kconfig */
+	if (IS_ENABLED(CONFIG_ADS1293_LEAD_OFF_DETECTION))
+	{
+		/* Enable DC lead-off detection on all used inputs */
+		device->config.lead_off.enable_dc = true;
+		device->config.lead_off.enable_ac = IS_ENABLED(CONFIG_ADS1293_LEAD_OFF_AC_ENABLE);
+		device->config.lead_off.threshold = CONFIG_ADS1293_LEAD_OFF_THRESHOLD;
+		device->config.lead_off.current = CONFIG_ADS1293_LEAD_OFF_CURRENT;
+		device->config.lead_off.input_mask = CONFIG_ADS1293_LEAD_OFF_INPUT_MASK;
+		LOG_DBG("Lead-off detection: enabled (DC mode)");
+	}
+	else
+	{
+		device->config.lead_off.enable_dc = false;
+		device->config.lead_off.enable_ac = false;
+		LOG_DBG("Lead-off detection: disabled");
+	}
+
+	/* Apply RLD from Kconfig */
+	device->config.rld.enabled = IS_ENABLED(CONFIG_ADS1293_RLD_ENABLE);
+	LOG_DBG("RLD: %s", device->config.rld.enabled ? "enabled" : "disabled");
 
 	/* Apply configuration */
 	init_result = ads1293_apply_config(device, &device->config);
@@ -945,32 +1250,90 @@ static int ads1293_zephyr_init(const struct device *const zephyr_device)
 		return -EIO;
 	}
 
+	if (IS_ENABLED(CONFIG_ADS1293_LEAD_OFF_DETECTION))
+	{
+		const int lod_result = ads1293_set_lead_off(device, &device->config.lead_off);
+		if (lod_result != ADS1293_OK)
+		{
+			LOG_ERR("Lead-off config failed: %d", lod_result);
+			return -EIO;
+		}
+	}
+
 	device->state = ADS1293_STATE_STANDBY;
 	device->initialized = true;
+	atomic_set(&device->sample_count, 0);
 
 	LOG_INF("ADS1293 initialized successfully");
 	return 0;
 }
 
-/* Helper macro to check if clkin-pwms property exists */
-#define ADS1293_HAS_CLKIN_PWMS(inst) DT_INST_NODE_HAS_PROP(inst, clkin_pwms)
+/*
+ * Device instantiation macro.
+ *
+ * Reads clkin-pwms from device tree if present. When specified, the driver
+ * starts the PWM clock before SPI communication and configures the ADS1293
+ * to use external clock mode. If not present, uses internal oscillator.
+ */
+#define ADS1293_VIN_SUPPLY(inst)                                                \
+	COND_CODE_1(DT_INST_NODE_HAS_PROP(inst, vin_supply),                    \
+		(DEVICE_DT_GET(DT_INST_PHANDLE(inst, vin_supply))),             \
+		(NULL))
 
-/* Conditionally get PWM spec or use empty struct */
-#define ADS1293_CLKIN_PWM_SPEC(inst)                                            \
-	COND_CODE_1(ADS1293_HAS_CLKIN_PWMS(inst),                               \
-		    (PWM_DT_SPEC_INST_GET(inst, clkin_pwms)),                   \
-		    ({0}))
+/* Use standard pwms property with name "clkin" */
+#define ADS1293_CLKIN_PWM(inst)                                                 \
+	COND_CODE_1(DT_INST_NODE_HAS_PROP(inst, pwms),                          \
+		(PWM_DT_SPEC_INST_GET_BY_NAME(inst, clkin)),                    \
+		({0}))
+
+#define ADS1293_HAS_CLKIN_PWM(inst)                                             \
+	DT_INST_NODE_HAS_PROP(inst, pwms)
+
+/* Per-channel input routing from devicetree (hardware-specific PCB configuration) */
+#define ADS1293_HAS_CH1_INPUTS(inst) DT_INST_NODE_HAS_PROP(inst, ch1_inputs)
+#define ADS1293_HAS_CH2_INPUTS(inst) DT_INST_NODE_HAS_PROP(inst, ch2_inputs)
+#define ADS1293_HAS_CH3_INPUTS(inst) DT_INST_NODE_HAS_PROP(inst, ch3_inputs)
+
+/* Default values use actual IN pin numbers (1-6), matching physical hardware:
+ *   Lead I   = IN2 - IN1 = LA - RA
+ *   Lead II  = IN3 - IN1 = LL - RA
+ *   Lead III = IN3 - IN2 = LL - LA
+ */
+#define ADS1293_CH1_INPUTS(inst)                                                \
+	COND_CODE_1(DT_INST_NODE_HAS_PROP(inst, ch1_inputs),                    \
+		({ DT_INST_PROP_BY_IDX(inst, ch1_inputs, 0),                    \
+		   DT_INST_PROP_BY_IDX(inst, ch1_inputs, 1) }),                 \
+		({ 2, 1 }))  /* Default: Lead I (IN2 - IN1) */
+
+#define ADS1293_CH2_INPUTS(inst)                                                \
+	COND_CODE_1(DT_INST_NODE_HAS_PROP(inst, ch2_inputs),                    \
+		({ DT_INST_PROP_BY_IDX(inst, ch2_inputs, 0),                    \
+		   DT_INST_PROP_BY_IDX(inst, ch2_inputs, 1) }),                 \
+		({ 3, 1 }))  /* Default: Lead II (IN3 - IN1) */
+
+#define ADS1293_CH3_INPUTS(inst)                                                \
+	COND_CODE_1(DT_INST_NODE_HAS_PROP(inst, ch3_inputs),                    \
+		({ DT_INST_PROP_BY_IDX(inst, ch3_inputs, 0),                    \
+		   DT_INST_PROP_BY_IDX(inst, ch3_inputs, 1) }),                 \
+		({ 3, 2 }))  /* Default: Lead III (IN3 - IN2) */
 
 #define ADS1293_DEFINE(inst)                                                    \
 	static struct ads1293_zephyr_data ads1293_data_##inst;                  \
                                                                                 \
 	static const struct ads1293_zephyr_config ads1293_config_##inst = {     \
 		.spi = SPI_DT_SPEC_INST_GET(inst, ADS1293_SPI_MODE, 0),         \
-		.drdy_gpio = GPIO_DT_SPEC_INST_GET_OR(inst, drdy_gpios, {0}),  \
-		.alarm_gpio = GPIO_DT_SPEC_INST_GET_OR(inst, alarm_gpios, {0}),\
-		.reset_gpio = GPIO_DT_SPEC_INST_GET_OR(inst, reset_gpios, {0}),\
-		.clkin_pwm = ADS1293_CLKIN_PWM_SPEC(inst),                     \
-		.has_clkin_pwm = ADS1293_HAS_CLKIN_PWMS(inst),                 \
+		.drdy_gpio = GPIO_DT_SPEC_INST_GET_OR(inst, drdy_gpios, {0}),   \
+		.alarm_gpio = GPIO_DT_SPEC_INST_GET_OR(inst, alarm_gpios, {0}), \
+		.reset_gpio = GPIO_DT_SPEC_INST_GET_OR(inst, reset_gpios, {0}), \
+		.clkin_pwm = ADS1293_CLKIN_PWM(inst),                           \
+		.vin_supply = ADS1293_VIN_SUPPLY(inst),                         \
+		.has_clkin_pwm = ADS1293_HAS_CLKIN_PWM(inst),                   \
+		.has_ch1_inputs = ADS1293_HAS_CH1_INPUTS(inst),                 \
+		.has_ch2_inputs = ADS1293_HAS_CH2_INPUTS(inst),                 \
+		.has_ch3_inputs = ADS1293_HAS_CH3_INPUTS(inst),                 \
+		.ch1_inputs = ADS1293_CH1_INPUTS(inst),                         \
+		.ch2_inputs = ADS1293_CH2_INPUTS(inst),                         \
+		.ch3_inputs = ADS1293_CH3_INPUTS(inst),                         \
 	};                                                                      \
                                                                                 \
 	DEVICE_DT_INST_DEFINE(inst, ads1293_zephyr_init, NULL,                  \
@@ -996,3 +1359,78 @@ ads1293_dev_t *ads1293_get_device(const char *const name)
 }
 
 #endif /* DT_HAS_COMPAT_STATUS_OKAY(ti_ads1293) */
+
+
+/* ============================================================================
+ * GPIO Read Functions (for polling mode)
+ * ============================================================================ */
+
+int ads1293_read_drdy_gpio(ads1293_dev_t *const dev, int *const state)
+{
+	if (!dev || !dev->hal || !state)
+	{
+		return ADS1293_ERR_INVALID_PARAM;
+	}
+
+	if (!ads1293_hal_has_drdy(dev->hal))
+	{
+		LOG_DBG("DRDY GPIO not configured");
+		return ADS1293_ERR_INVALID_PARAM;
+	}
+
+	const struct gpio_dt_spec *drdy_gpio = dev->hal->drdy_gpio;
+	int gpio_state = gpio_pin_get_dt(drdy_gpio);
+	if (gpio_state < 0)
+	{
+		LOG_ERR("Failed to read DRDY GPIO: %d", gpio_state);
+		return ADS1293_ERR_IO;
+	}
+
+	*state = gpio_state;
+	return ADS1293_OK;
+}
+
+int ads1293_read_alarm_gpio(ads1293_dev_t *const dev, int *const state)
+{
+	if (!dev || !dev->hal || !state)
+	{
+		return ADS1293_ERR_INVALID_PARAM;
+	}
+
+	if (!ads1293_hal_has_alarm(dev->hal))
+	{
+		LOG_DBG("ALARM GPIO not configured");
+		return ADS1293_ERR_INVALID_PARAM;
+	}
+
+	const struct gpio_dt_spec *alarm_gpio = dev->hal->alarm_gpio;
+	int gpio_state = gpio_pin_get_dt(alarm_gpio);
+	if (gpio_state < 0)
+	{
+		LOG_ERR("Failed to read ALARM GPIO: %d", gpio_state);
+		return ADS1293_ERR_IO;
+	}
+
+	*state = gpio_state;
+	return ADS1293_OK;
+}
+
+bool ads1293_has_drdy_gpio(ads1293_dev_t *const dev)
+{
+	if (!dev || !dev->hal)
+	{
+		return false;
+	}
+
+	return ads1293_hal_has_drdy(dev->hal);
+}
+
+bool ads1293_has_alarm_gpio(ads1293_dev_t *const dev)
+{
+	if (!dev || !dev->hal)
+	{
+		return false;
+	}
+
+	return ads1293_hal_has_alarm(dev->hal);
+}
