@@ -1187,33 +1187,37 @@ static int ads1293_zephyr_init(const struct device *const zephyr_device)
 	/* Apply sample rate from Kconfig */
 	{
 		const uint16_t target_rate = CONFIG_ADS1293_SAMPLE_RATE;
-		/* Calculate R3 decimation for target sample rate
-		 * Sample rate = f_CLK / (R1 * R2 * R3)
-		 * With defaults: R1=5, R2=4, f_CLK=409.6kHz (internal) or 204.8kHz (external)
-		 * R3 = f_CLK / (R1 * R2 * target_rate)
-		 */
-		uint32_t clock_freq = cfg->has_clkin_pwm ? 204800 : 409600;
-		uint32_t r1_val = 5; /* Default R1 divisor */
-		uint32_t r2_val = 4; /* Default R2 divisor */
+		const uint32_t clock_freq = 409600; /* fixed 409.6 kHz (internal/external) */
+		const uint32_t r1_val = 5; /* Default R1 divisor */
+		const uint32_t r2_val = 4; /* Default R2 divisor */
+		const uint32_t min_rate = clock_freq / (r1_val * r2_val * 255);
+		const uint32_t max_rate = clock_freq / (r1_val * r2_val * 1);
+
+		if (target_rate < min_rate || target_rate > max_rate)
+		{
+			LOG_ERR("Sample rate %u Hz out of range [%u, %u]",
+				target_rate, min_rate, max_rate);
+			return -EINVAL;
+		}
+
 		uint8_t r3 = (uint8_t)(clock_freq / (r1_val * r2_val * target_rate));
 
-		/* Clamp R3 to valid range */
-		if (r3 < 2)
+		if (r3 < 1)
 		{
-			r3 = 2;
+			r3 = 1;
 		}
 		else if (r3 > 255)
 		{
 			r3 = 255;
 		}
 
-		/* Apply R3 to all 3 channels (same sample rate) */
 		device->config.decimation.r3[0] = r3;
 		device->config.decimation.r3[1] = r3;
 		device->config.decimation.r3[2] = r3;
 
-		LOG_INF("Sample rate: target=%u Hz, R3=%u (actual ~%u Hz)",
-			target_rate, r3, clock_freq / (r1_val * r2_val * r3));
+		const uint32_t actual_rate = clock_freq / (r1_val * r2_val * r3);
+		LOG_INF("Sample rate: target=%u Hz, R3=%u (actual %u Hz)",
+			target_rate, r3, actual_rate);
 	}
 
 	/* Apply AFE resolution masks from Kconfig */
